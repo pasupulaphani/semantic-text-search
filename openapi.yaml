@@ -1,0 +1,822 @@
+openapi: "3.0.3"
+
+info:
+  title: Semantic Document Search API
+  version: "1.0.0"
+  description: |
+    Hybrid keyword + semantic search over client documents.
+
+    Combines **PostgreSQL full-text search** (`tsvector` / `ILIKE`) with
+    **pgvector cosine similarity** on OpenAI `text-embedding-3-small` embeddings.
+
+    Demo data (3 clients, 13 documents) is loaded automatically on startup.
+    Try `GET /search/?q=address+proof` or `GET /search/?q=passport` to see it in action.
+  contact:
+    name: API Support
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: http://localhost:8080
+    description: Docker Compose server
+
+tags:
+  - name: Health
+    description: Liveness probe
+  - name: Clients
+    description: Client management (CRUD)
+  - name: Documents
+    description: Document management and on-demand LLM summarisation
+  - name: Search
+    description: Hybrid keyword + semantic document search
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paths
+# ─────────────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── Health ──────────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      operationId: healthCheck
+      tags: [Health]
+      summary: Health check
+      description: Returns `ok` when the service is running.
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                env: development
+
+  # ── Clients ─────────────────────────────────────────────────────────────────
+
+  /clients/:
+    post:
+      operationId: createClient
+      tags: [Clients]
+      summary: Create a client
+      description: Register a new client. The `email` field must be unique.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientCreate"
+            example:
+              first_name: Jane
+              last_name: Smith
+              email: jane@example.com
+              description: WealthTech client onboarded Q1 2024
+              social_links:
+                - https://linkedin.com/in/janesmith
+      responses:
+        "201":
+          description: Client created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+    get:
+      operationId: listClients
+      tags: [Clients]
+      summary: List clients
+      description: Return a paginated list of all clients.
+      parameters:
+        - name: skip
+          in: query
+          required: false
+          description: Number of records to skip (pagination offset)
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of records to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Paginated client list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Client"
+
+  /clients/{client_id}:
+    get:
+      operationId: getClient
+      tags: [Clients]
+      summary: Get a client
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          description: UUID of the client
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Client found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      operationId: updateClient
+      tags: [Clients]
+      summary: Update a client
+      description: Partial update — only supplied fields are changed.
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          description: UUID of the client
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientUpdate"
+      responses:
+        "200":
+          description: Client updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+    delete:
+      operationId: deleteClient
+      tags: [Clients]
+      summary: Delete a client
+      description: Delete a client and all their documents (cascade).
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          description: UUID of the client
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Client deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Documents ────────────────────────────────────────────────────────────────
+
+  /clients/{client_id}/documents/:
+    post:
+      operationId: createDocument
+      tags: [Documents]
+      summary: Upload a document
+      description: |
+        Upload a document for a client.
+
+        The semantic embedding is generated **asynchronously** in the background,
+        so the response is immediate. The document is searchable via keyword right
+        away; semantic search becomes available once the embedding job completes
+        (typically < 1 s).
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          description: UUID of the client
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentCreate"
+            example:
+              title: Utility Bill – March 2024
+              content: 123 Main St, Springfield…
+              doc_type: address_proof
+      responses:
+        "201":
+          description: Document created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+    get:
+      operationId: listDocuments
+      tags: [Documents]
+      summary: List client documents
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          description: UUID of the client
+          schema:
+            type: string
+            format: uuid
+        - name: skip
+          in: query
+          required: false
+          description: Number of records to skip (pagination offset)
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of records to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Document list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Document"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /clients/{client_id}/documents/{document_id}:
+    get:
+      operationId: getDocument
+      tags: [Documents]
+      summary: Get a document
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          description: UUID of the client
+          schema:
+            type: string
+            format: uuid
+        - name: document_id
+          in: path
+          required: true
+          description: UUID of the document
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Document found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      operationId: updateDocument
+      tags: [Documents]
+      summary: Update a document
+      description: Partial update. Re-embeds content in the background if `content` changes.
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          description: UUID of the client
+          schema:
+            type: string
+            format: uuid
+        - name: document_id
+          in: path
+          required: true
+          description: UUID of the document
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentUpdate"
+      responses:
+        "200":
+          description: Document updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+    delete:
+      operationId: deleteDocument
+      tags: [Documents]
+      summary: Delete a document
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          description: UUID of the client
+          schema:
+            type: string
+            format: uuid
+        - name: document_id
+          in: path
+          required: true
+          description: UUID of the document
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Document deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /clients/{client_id}/documents/{document_id}/summarise:
+    post:
+      operationId: summariseDocument
+      tags: [Documents]
+      summary: Summarise a document (LLM)
+      description: |
+        Generate a 2–4 sentence LLM summary for a document using OpenAI.
+
+        The result is **cached** on the document record; subsequent calls return
+        instantly without making another LLM call.
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          description: UUID of the client
+          schema:
+            type: string
+            format: uuid
+        - name: document_id
+          in: path
+          required: true
+          description: UUID of the document
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Summary generated or returned from cache
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SummaryResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Search ───────────────────────────────────────────────────────────────────
+
+  /search/:
+    get:
+      operationId: search
+      tags: [Search]
+      summary: Unified search — clients and documents
+      description: |
+        Search across **clients** and **documents** in a single request.
+
+        ### Client matching
+        `ILIKE` substring search on `first_name`, `last_name`, `email`, and `description`.
+
+        | Query | Matches |
+        |---|---|
+        | `NevisWealth` | client with email `john.doe@neviswealth.com` |
+        | `Alice` | client with first_name `Alice` |
+        | `WealthTech` | client whose description contains `WealthTech` |
+
+        ### Document matching
+        Two-pass hybrid search:
+        - **Keyword** — PostgreSQL `tsvector` full-text rank + `ILIKE` fallback
+        - **Semantic** — pgvector cosine similarity on `all-MiniLM-L6-v2` embeddings
+          (upgrades to `text-embedding-3-small` when `OPENAI_API_KEY` is set).
+          Handles concept matching, e.g. `"address proof"` → `"utility bill"`.
+
+        Set `use_semantic=false` for keyword-only document search.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Search query
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1000
+          examples:
+            company_in_email:
+              summary: Match company name in email domain
+              value: NevisWealth
+            concept_match:
+              summary: Semantic concept match for documents
+              value: address proof
+            name_match:
+              summary: Match client by first name
+              value: Alice
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results per category (clients and documents)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: use_semantic
+          in: query
+          required: false
+          description: Include pgvector semantic search for documents (set `false` for keyword-only)
+          schema:
+            type: boolean
+            default: true
+      responses:
+        "200":
+          description: Search results — matched clients and documents
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+              example:
+                query: NevisWealth
+                total: 1
+                clients:
+                  - client:
+                      id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                      first_name: John
+                      last_name: Doe
+                      email: john.doe@neviswealth.com
+                      description: null
+                      social_links: null
+                      created_at: "2024-03-01T10:00:00Z"
+                      updated_at: "2024-03-01T10:00:00Z"
+                    score: 1.0
+                results: []
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Components
+# ─────────────────────────────────────────────────────────────────────────────
+
+components:
+
+  # ── Responses ────────────────────────────────────────────────────────────────
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+          example:
+            detail: Client not found.
+
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HTTPValidationError"
+
+  # ── Schemas ──────────────────────────────────────────────────────────────────
+
+  schemas:
+
+    # ── Health ──────────────────────────────────────────────────────────────────
+
+    HealthResponse:
+      type: object
+      required: [status, env]
+      properties:
+        status:
+          type: string
+          example: ok
+        env:
+          type: string
+          example: development
+
+    # ── Client ──────────────────────────────────────────────────────────────────
+
+    ClientCreate:
+      type: object
+      required: [first_name, last_name, email]
+      properties:
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Jane
+        last_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Smith
+        email:
+          type: string
+          format: email
+          example: jane@example.com
+        description:
+          type: string
+          nullable: true
+          example: WealthTech client onboarded Q1 2024
+        social_links:
+          type: array
+          nullable: true
+          items:
+            type: string
+            format: uri
+          example:
+            - https://linkedin.com/in/janesmith
+
+    ClientUpdate:
+      type: object
+      description: All fields are optional — only supplied fields are changed.
+      properties:
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        last_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        email:
+          type: string
+          format: email
+        description:
+          type: string
+          nullable: true
+        social_links:
+          type: array
+          nullable: true
+          items:
+            type: string
+            format: uri
+
+    Client:
+      type: object
+      required: [id, first_name, last_name, email, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        first_name:
+          type: string
+          example: Jane
+        last_name:
+          type: string
+          example: Smith
+        email:
+          type: string
+          format: email
+          example: jane@example.com
+        description:
+          type: string
+          nullable: true
+          example: WealthTech client onboarded Q1 2024
+        social_links:
+          type: array
+          nullable: true
+          items:
+            type: string
+            format: uri
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ── Document ─────────────────────────────────────────────────────────────────
+
+    DocumentCreate:
+      type: object
+      required: [title, content]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+          example: Utility Bill – March 2024
+        content:
+          type: string
+          minLength: 1
+          example: 123 Main St, Springfield…
+        doc_type:
+          type: string
+          maxLength: 100
+          nullable: true
+          description: Optional document classification (e.g. address_proof, id_document)
+          example: address_proof
+
+    DocumentUpdate:
+      type: object
+      description: All fields are optional — only supplied fields are changed.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        content:
+          type: string
+          minLength: 1
+        doc_type:
+          type: string
+          maxLength: 100
+          nullable: true
+
+    Document:
+      type: object
+      required: [id, client_id, title, content, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        client_id:
+          type: string
+          format: uuid
+          example: 3fa85f64-5717-4562-b3fc-2c963f66afa7
+        title:
+          type: string
+          example: Utility Bill – March 2024
+        content:
+          type: string
+          example: 123 Main St, Springfield…
+        doc_type:
+          type: string
+          nullable: true
+          description: Document classification
+          example: address_proof
+        summary:
+          type: string
+          nullable: true
+          description: LLM-generated summary (populated on demand)
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SummaryResponse:
+      type: object
+      required: [document_id, summary]
+      properties:
+        document_id:
+          type: string
+          format: uuid
+        summary:
+          type: string
+          example: This utility bill from March 2024 confirms the address at 123 Main St, Springfield.
+
+    # ── Search ───────────────────────────────────────────────────────────────────
+
+    SearchResult:
+      type: object
+      required: [document, keyword_score, semantic_score, combined_score]
+      properties:
+        document:
+          $ref: "#/components/schemas/Document"
+        keyword_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Normalised tsvector/ILIKE score [0–1]
+          example: 0.85
+        semantic_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Cosine similarity score [0–1]
+          example: 0.92
+        combined_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Weighted combination of both scores
+          example: 0.895
+
+    ClientSearchResult:
+      type: object
+      required: [client, score]
+      description: A client matched by name, email, or description.
+      properties:
+        client:
+          $ref: "#/components/schemas/Client"
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Match score — 1.0 for email/name match, 0.7 for description match
+          example: 1.0
+
+    SearchResponse:
+      type: object
+      required: [query, total, clients, results]
+      properties:
+        query:
+          type: string
+          example: NevisWealth
+        total:
+          type: integer
+          description: Total number of matched clients + documents
+          example: 3
+        clients:
+          type: array
+          description: Clients matched by name, email, or description
+          items:
+            $ref: "#/components/schemas/ClientSearchResult"
+        results:
+          type: array
+          description: Document hits ranked by combined keyword + semantic score
+          items:
+            $ref: "#/components/schemas/SearchResult"
+
+    # ── Errors ───────────────────────────────────────────────────────────────────
+
+    ErrorDetail:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          example: Client not found.
+
+    ValidationErrorItem:
+      type: object
+      required: [loc, msg, type]
+      properties:
+        loc:
+          type: array
+          items:
+            oneOf:
+              - type: string
+              - type: integer
+          example: [body, email]
+        msg:
+          type: string
+          example: value is not a valid email address
+        type:
+          type: string
+          example: value_error.email
+
+    HTTPValidationError:
+      type: object
+      properties:
+        detail:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidationErrorItem"
