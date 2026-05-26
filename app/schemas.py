@@ -5,7 +5,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
-from typing import Optional
+from typing import Literal, Optional
 
 
 def _validate_url_list(v: Optional[list[str]]) -> Optional[list[str]]:
@@ -126,11 +126,11 @@ class SearchResult(BaseModel):
     combined_score: float = 0.0
 
 
+
 class SearchResponse(BaseModel):
     query: str
     total: int
-    clients: list[ClientSearchResult] = Field(default_factory=list)
-    results: list[SearchResult] = Field(default_factory=list)
+    items: list[ClientSearchResult | SearchResult] = Field(default_factory=list)
 
 
 class SummaryResponse(BaseModel):

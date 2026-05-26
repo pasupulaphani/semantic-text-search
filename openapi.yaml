@@ -765,7 +765,7 @@ components:
 
     SearchResponse:
       type: object
-      required: [query, total, clients, results]
+      required: [query, total, items]
       properties:
         query:
           type: string
@@ -774,16 +774,9 @@ components:
           type: integer
           description: Total number of matched clients + documents
           example: 3
-        clients:
+        items:
           type: array
-          description: Clients matched by name, email, or description
-          items:
-            $ref: "#/components/schemas/ClientSearchResult"
-        results:
-          type: array
-          description: Document hits ranked by combined keyword + semantic score
-          items:
-            $ref: "#/components/schemas/SearchResult"
+          description: Clients matched by name, email, or description, and documents matched by keyword or semantic search.
 
     # ── Errors ───────────────────────────────────────────────────────────────────
 

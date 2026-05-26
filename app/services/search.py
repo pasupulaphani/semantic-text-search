@@ -11,8 +11,7 @@ from app.schemas import (
     SearchResponse,
     SearchResult,
 )
-# Import embedding lazily inside semantic search to avoid importing
-# heavy ML dependencies at module import time.
+
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -25,7 +24,7 @@ async def unified_search(
     doc_hits = await _document_search(db, query, limit=limit, use_semantic=use_semantic)
     total = len(client_hits) + len(doc_hits)
     return SearchResponse(
-        query=query, total=total, clients=client_hits, results=doc_hits
+        query=query, total=total, items=client_hits + doc_hits
     )
 
 
